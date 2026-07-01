@@ -69,3 +69,5 @@ The non-zero exit on drift makes `scan` composable in cron jobs and CI.
 `uid`, `gid`, `mode`, `inode`, and `O_NOFOLLOW` are Unix concepts. The tool runs
 on Windows but reports `uid`/`gid` as 0 and cannot apply the symlink-hashing
 race protection there; its guarantees are Unix-centric.
+
+This took me multiple weeks to finish(i ended up posting the first draft by accident). Feel free to fork my work or even help improve my work, im always open :)
