@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Baselines and keys should never be committed
+*.baseline
+base.json
+*.key
+key.bin
