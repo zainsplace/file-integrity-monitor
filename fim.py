@@ -59,24 +59,27 @@ def build_entry(path):
 
     mode = st.st_mode
     entry = {
-        "path": path,
+        "path": os.path.normpath(path),
         "mode": stat.S_IMODE(mode),
         "uid": st.st_uid,
         "gid": st.st_gid,
-        "size": st.st_size,
-        "mtime": st.st_mtime,
         "inode": st.st_ino,
     }
 
     if stat.S_ISREG(mode):
         entry["type"] = "file"
+        entry["size"] = st.st_size
+        entry["mtime"] = st.st_mtime
         entry["sha256"] = hash_file(path)
     elif stat.S_ISLNK(mode):
         entry["type"] = "symlink"
+        entry["mtime"] = st.st_mtime
         try:
             entry["target"] = os.readlink(path)
         except OSError as exc:
             raise EntryError(f"cannot readlink {path!r}: {exc}") from exc
+    elif stat.S_ISDIR(mode):
+        entry["type"] = "dir"
     else:
         return None
 
@@ -84,20 +87,20 @@ def build_entry(path):
 
 
 def hash_file(path):
-    """Return the hex SHA-256 of a regular file's contents."""
+    """Return the hex SHA-256 of a file's contents, or None if unreadable."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
-    except OSError as exc:
-        raise EntryError(f"cannot open {path!r} for hashing: {exc}") from exc
+    except OSError:
+        return None
 
     digest = hashlib.sha256()
     try:
         with os.fdopen(fd, "rb") as fh:
             for chunk in iter(lambda: fh.read(_HASH_CHUNK), b""):
                 digest.update(chunk)
-    except OSError as exc:
-        raise EntryError(f"error hashing {path!r}: {exc}") from exc
+    except OSError:
+        return None
     return digest.hexdigest()
 
 
@@ -115,6 +118,8 @@ def collect_entries(targets):
             continue
 
         for root, dirs, files in os.walk(target, followlinks=False):
+            _try_append(entries, errors, root)
+
             real_dirs = []
             for d in dirs:
                 dpath = os.path.join(root, d)
@@ -313,8 +318,15 @@ def _print_scan_human(result):
             for change in changes:
                 print(
                     f"           {cls}: {change['field']}  "
-                    f"{change['baseline']!r} -> {change['current']!r}"
+                    f"{_fmt_value(change['field'], change['baseline'])} -> "
+                    f"{_fmt_value(change['field'], change['current'])}"
                 )
+
+
+def _fmt_value(field, value):
+    if field == "mode" and isinstance(value, int):
+        return oct(value)
+    return repr(value)
 
 
 def build_parser():
