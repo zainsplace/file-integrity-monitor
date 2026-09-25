@@ -34,6 +34,28 @@ def create_baseline(tmp_path, target):
     return baseline
 
 
+def scan_json(baseline, target, capsys):
+    capsys.readouterr()
+    rc = fim.main(["scan", "--baseline", str(baseline), str(target), "--json"])
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def modified_classes(result, name):
+    matches = [m for m in result["modified"] if m["path"].endswith(name)]
+    assert len(matches) == 1
+    return matches[0]["classes"]
+
+
+def make_symlink(target, link):
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks need extra privileges on this platform")
+
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+
+
 def test_create_then_verify_succeeds(tmp_path, tree, capsys):
     baseline = create_baseline(tmp_path, tree)
     rc = fim.main(["verify", "--baseline", str(baseline)])
@@ -158,6 +180,93 @@ def test_mtime_only_change_is_classified_as_mtime(tmp_path, tree, capsys):
     out = capsys.readouterr().out
     assert "MODIFIED" in out
     assert "mtime" in out
+
+
+@posix_only
+def test_attack2_setuid_chmod_is_flagged_as_permissions_only(tmp_path, tree, capsys):
+    baseline = create_baseline(tmp_path, tree)
+    target_file = tree / "a.txt"
+    before = target_file.stat().st_mode
+    os.chmod(target_file, 0o4755)
+    rc, result = scan_json(baseline, tree, capsys)
+    assert rc == 1
+    classes = modified_classes(result, "a.txt")
+    assert set(classes) == {"permissions"}
+    change = classes["permissions"][0]
+    assert change["baseline"] == before & 0o7777
+    assert change["current"] & 0o4000
+
+
+def test_attack2_owner_change_is_flagged_as_owner_only():
+    baseline = [{"path": "etc/app.conf", "type": "file", "uid": 0, "gid": 0}]
+    current = [{"path": "etc/app.conf", "type": "file", "uid": 1000, "gid": 0}]
+    result = fim.diff(baseline, current)
+    assert set(modified_classes(result, "app.conf")) == {"owner"}
+
+
+def test_attack2_content_edit_with_mtime_restored_still_shows_content(tmp_path, tree, capsys):
+    baseline = create_baseline(tmp_path, tree)
+    target_file = tree / "a.txt"
+    original = target_file.stat()
+    target_file.write_text("omega\n")
+    os.utime(target_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+    rc, result = scan_json(baseline, tree, capsys)
+    assert rc == 1
+    classes = modified_classes(result, "a.txt")
+    assert "content" in classes
+    assert "mtime" not in classes
+
+
+def test_attack3_file_swapped_for_symlink_is_recorded_not_followed(tmp_path, tree, capsys):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("not part of the baseline\n")
+    baseline = create_baseline(tmp_path, tree)
+    (tree / "a.txt").unlink()
+    make_symlink(secret, tree / "a.txt")
+    rc, result = scan_json(baseline, tree, capsys)
+    assert rc == 1
+    content = modified_classes(result, "a.txt")["content"]
+    changes = {c["field"]: c["current"] for c in content}
+    assert changes["type"] == "symlink"
+    assert changes["target"] == str(secret)
+    assert changes["sha256"] is None
+
+
+def test_attack3_symlinked_directory_is_not_descended(tmp_path, tree):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.txt").write_text("keep out\n")
+    make_symlink(outside, tree / "linked")
+    entries, errors = fim.collect_entries([str(tree)])
+    by_name = {Path(e["path"]).name: e for e in entries}
+    assert errors == []
+    assert by_name["linked"]["type"] == "symlink"
+    assert "private.txt" not in by_name
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW unavailable")
+def test_attack3_hashing_refuses_to_follow_a_symlink(tmp_path):
+    real = tmp_path / "real.txt"
+    real.write_text("data\n")
+    link = tmp_path / "link.txt"
+    make_symlink(real, link)
+    assert fim.hash_file(str(real)) is not None
+    assert fim.hash_file(str(link)) is None
+
+
+def test_attack3_inode_swap_with_identical_content_is_flagged_as_inode(tmp_path, tree, capsys):
+    baseline = create_baseline(tmp_path, tree)
+    target_file = tree / "a.txt"
+    original = target_file.stat()
+    replacement = tree / "replacement.tmp"
+    replacement.write_bytes(target_file.read_bytes())
+    os.chmod(replacement, original.st_mode & 0o7777)
+    os.replace(replacement, target_file)
+    os.utime(target_file, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert target_file.stat().st_ino != original.st_ino
+    rc, result = scan_json(baseline, tree, capsys)
+    assert rc == 1
+    assert set(modified_classes(result, "a.txt")) == {"inode"}
 
 
 def test_signature_is_stable_across_entry_order():
