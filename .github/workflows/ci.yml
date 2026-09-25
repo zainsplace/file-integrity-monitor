@@ -16,5 +16,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install pytest==9.1.1 ruff==0.16.8
-      - run: python -m ruff check fim.py tests
+      - run: python -m ruff check --output-format=github fim.py tests
       - run: python -m pytest tests -v
