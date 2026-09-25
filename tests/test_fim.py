@@ -228,7 +228,7 @@ def test_attack3_file_swapped_for_symlink_is_recorded_not_followed(tmp_path, tre
     content = modified_classes(result, "a.txt")["content"]
     changes = {c["field"]: c["current"] for c in content}
     assert changes["type"] == "symlink"
-    assert changes["target"] == str(secret)
+    assert os.path.samefile(changes["target"], secret)
     assert changes["sha256"] is None
 
 
